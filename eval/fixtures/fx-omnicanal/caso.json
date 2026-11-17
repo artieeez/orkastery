@@ -4,7 +4,7 @@
   "esperado": {
     "simulado": true,
     "canaisRegistrados": 4,
-    "transportes": 2,
+    "transportes": 3,
     "chavesIndependentes": 2,
     "aprovados": 4,
     "canaisDistinguiveis": 4,

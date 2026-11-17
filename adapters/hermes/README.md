@@ -20,7 +20,7 @@ venv do Hermes e um destino explícito `telegram:chat_id[:topic_id]`:
 }
 ```
 
-O mesmo script entrega no Slack com `slack:CONVERSA[:thread_ts]` (ids `C...`, `G...` ou `D...`),
+O mesmo script entrega no Slack com `slack:ID[:thread_ts]` (ids `C...`, `G...` ou `D...`),
 pela conexão Slack que o Hermes já mantém.
 
 Grave a configuração em `.orkastery/monitor/pulse-host.json` (o `ork onboarding` já a grava
