@@ -38,6 +38,17 @@ class TransportePulseTest(unittest.TestCase):
             self.assertEqual(subprocess.run(cmd, env=env, capture_output=True).returncode, 1)
             env['OK'] = 'skip'
             self.assertEqual(subprocess.run(cmd, env=env, capture_output=True).returncode, 1)
+            # Slack: conversa explicita, com thread opcional; nome de canal ou usuario solto nao vale.
+            env['OK'] = '1'
+            for alvo in ['slack:C0SIMULADO', 'slack:C0SIMULADO:1726448400.000100']:
+                r = subprocess.run([sys.executable, str(script), '--target', alvo, '--message', 'oi'],
+                                   env=env, text=True, capture_output=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(json.loads((root/'recibo.json').read_text())['target'], alvo)
+            for alvo in ['slack:#geral', 'slack:U0SIMULADO', 'slack:C0SIMULADO:abc', 'discord:123']:
+                r = subprocess.run([sys.executable, str(script), '--target', alvo, '--message', 'oi'],
+                                   env=env, capture_output=True)
+                self.assertEqual(r.returncode, 2, alvo)
 
 
 def verificar_parser_real():

@@ -110,10 +110,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--projeto', default=os.environ.get('ORK_PROJETO', ''),
                         help='Nome do projeto em `ork projetos` (ou ORK_PROJETO)')
-    parser.add_argument('--target', help='Destino explícito: telegram:chat_id[:topic_id]; sem ele, só imprime')
+    parser.add_argument('--target', help='Destino explícito: telegram:chat_id[:topic_id] ou slack:CONVERSA[:thread_ts]; '
+                                          'sem ele, só imprime')
     args = parser.parse_args()
-    if args.target is not None and not re.fullmatch(r'telegram:-?\d+(?::\d+)?', args.target):
-        parser.error('use identificador explícito do chat Telegram autorizado')
+    if args.target is not None and not (re.fullmatch(r'telegram:-?\d+(?::\d+)?', args.target)
+                                        or re.fullmatch(r'slack:[CGD][A-Z0-9]{2,20}(?::\d{1,12}\.\d{1,8})?', args.target)):
+        parser.error('use identificador explícito do chat Telegram ou da conversa Slack autorizada')
     texto = mensagem(args.projeto.strip())
     if texto is None:
         return 0

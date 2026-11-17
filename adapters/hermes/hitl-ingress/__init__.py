@@ -1,5 +1,11 @@
 """Ingresso nativo Hermes: callback síncrono, I/O limitado no loop do host.
 
+O canal `hermes` atende por dois transportes assinados: Telegram e Slack. Os dois usam a MESMA
+chave do canal (`ORK_HITL_INGRESS_KEY_HERMES`); o transporte entra no corpo assinado como
+`origem`, então um envelope de um nunca vale como o outro. No Slack, `/ork ...` no começo da
+mensagem vira slash command no cliente: o dono escreve `@Hermes /ork ...`, e o gateway tira a
+menção antes deste hook.
+
 D12: este host é o canal `hermes`. O canal entra no corpo assinado do envelope, não
 num campo solto: Hermes e OpenClaw compartilham transporte, mas têm chaves e identidades
 próprias; sem o canal dentro do HMAC o recibo perderia essa proveniência.
@@ -185,7 +191,7 @@ def _call_core(argv, envelope, root, env):
                           timeout=CORE_TIMEOUT, check=False)
 
 
-async def _deliver(entry, msg, operation, pedido, argv, envelope, root, env):
+async def _deliver(entry, msg, operation, pedido, argv, envelope, root, env, confirm=None):
     try:
         # A espera no executor também tem orçamento. Cancelamento não prova rollback.
         entry['effect'] = 'unknown'
@@ -201,6 +207,11 @@ async def _deliver(entry, msg, operation, pedido, argv, envelope, root, env):
             return
         entry['confirmation'] = 'unknown'
         reply = receipt['mensagem'] if operation == 'pulse' else CONFIRM_TEXT[operation]
+        if confirm is not None:
+            # Slack: a confirmacao volta pelo adaptador do gateway, na mesma conversa e thread.
+            if await asyncio.wait_for(confirm(reply), CONFIRM_TIMEOUT) is True:
+                entry['confirmation'] = 'sent'
+            return
         sent = await asyncio.wait_for(msg.reply_text(
             reply, do_quote=False, parse_mode=None,
             read_timeout=CONFIRM_TIMEOUT, write_timeout=CONFIRM_TIMEOUT,
@@ -235,6 +246,8 @@ def _ingress(*, event, gateway, **_kwargs):
     pulse = not text.startswith('/ork ') and (_is_pulse(text) or referencia not in (None, PULSE_REPLY_A_OUTRA))
     if not text.startswith('/ork ') and not pulse:
         return None
+    if getattr(getattr(getattr(event, 'source', None), 'platform', None), 'value', None) == 'slack':
+        return _slack_ingress(event, gateway, text, pulse)
     if getattr(getattr(event, 'source', None), 'platform', None) and event.source.platform.value != 'telegram':
         # O resumo do pulse sai pelo Telegram; a resposta a ele so e reconhecida la.
         return None if pulse else _native_ingress(event, gateway, _kwargs.get('session_store'))
@@ -328,6 +341,129 @@ def _ingress(*, event, gateway, **_kwargs):
                  'ref': hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:16]}
         _entries[identity] = entry  # Reserva antes de agendar, sem await no callback.
         work = _deliver(entry, msg, operation, pedido, argv, envelope, root, dict(os.environ))
+        try:
+            task = loop.create_task(work)
+        except Exception:
+            work.close()
+            entry.update(effect='unconfirmed', done=True)
+            return _status(entry)
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
+        return _status(entry)
+    except Exception:
+        pass
+    return _status()
+
+
+SLACK_TIME = re.compile(r'^T[A-Z0-9]{2,20}$')
+SLACK_USUARIO = re.compile(r'^[UW][A-Z0-9]{2,20}$')
+SLACK_CONVERSA = re.compile(r'^[CGD][A-Z0-9]{2,20}$')
+SLACK_TS = re.compile(r'^\d{1,12}\.\d{1,8}$')
+
+
+def _slack_texto_confere(bruto, text, bot):
+    """O texto que o gateway entregou e o do evento do Slack, sem a menção ao bot no começo.
+
+    Só a menção ao PRÓPRIO bot sai; qualquer outra diferença (edição, enriquecimento, entidades
+    escapadas) recusa, e a mensagem segue ao assistente como conversa."""
+    if not isinstance(bruto, str) or not isinstance(text, str):
+        return False
+    corpo = bruto.strip()
+    mencao = f'<@{bot}>'
+    if corpo.startswith(mencao):
+        corpo = corpo[len(mencao):].strip()
+    return corpo == text.strip() and text == text.strip()
+
+
+def _slack_argv(operation, thread, pedido, envelope):
+    base = ['--origem', 'slack', '--canal', CANAL, '--por', envelope['por'], '--mensagem', envelope['mensagem']]
+    cli = os.environ.get('ORK_BIN', 'ork')
+    if operation == 'pulse':
+        return [cli, 'pulse', 'responder', '--resposta-stdin'] + base
+    if operation == 'noctum':
+        return [cli, 'noctum', 'responder', pedido[len(NOCTUM_ENDERECO):], '--resposta-stdin'] + base
+    return [cli, 'gate' if operation == 'gate' else 'sessions', 'answer', thread, pedido,
+            '--resposta-stdin' if operation == 'gate' else '--stdin'] + base
+
+
+def _slack_ingress(event, gateway, text, pulse):
+    """O mesmo ingresso do Telegram, com as provas do Slack: workspace, pessoa e conversa nas allowlists,
+    mensagem humana original (sem subtype nem bot), texto idêntico ao do evento e janela de 60 s."""
+    try:
+        from gateway.platforms.base import MessageEvent
+        if not isinstance(event, MessageEvent) or getattr(event, 'internal', False):
+            return _status()
+        raw, source = event.raw_message, event.source
+        if not isinstance(raw, dict) or gateway._is_user_authorized(source) is not True:
+            return _status()
+        bot = os.environ.get('ORK_HITL_SLACK_BOT_ID', '')
+        time_ok = os.environ.get('ORK_HITL_SLACK_TEAM', '')
+        user, channel, ts = raw.get('user'), raw.get('channel'), raw.get('ts')
+        team = raw.get('team') or getattr(source, 'scope_id', None)
+        if (not SLACK_USUARIO.fullmatch(bot) or not SLACK_TIME.fullmatch(time_ok)
+                or not isinstance(user, str) or not SLACK_USUARIO.fullmatch(user)
+                or not isinstance(channel, str) or not SLACK_CONVERSA.fullmatch(channel)
+                or not isinstance(ts, str) or not SLACK_TS.fullmatch(ts)
+                or team != time_ok or user == bot
+                # Edição, mensagem de bot, entrada/saída de canal e afins têm subtype; só a mensagem original vale.
+                or raw.get('subtype') is not None or raw.get('bot_id') or raw.get('app_id')
+                or getattr(source, 'is_bot', False) is not False
+                or str(source.user_id) != user or str(source.chat_id) != channel
+                or str(event.message_id) != ts
+                or not _slack_texto_confere(raw.get('text'), text, bot)
+                or not _allowed('ORK_HITL_SLACK_USERS', user)
+                or not _allowed('ORK_HITL_SLACK_CHANNELS', channel)):
+            return _status()
+        if pulse:
+            operation, thread, pedido, answer = 'pulse', PULSE_ALVO, PULSE_ENDERECO, text
+        else:
+            match = COMMAND.fullmatch(text)
+            noctum = None if match else NOCTUM.fullmatch(text)
+            if (not match and not noctum) or '\x00' in text:
+                return _status()
+            if noctum:
+                operation, thread, pedido, answer = 'noctum', NOCTUM_ALVO, NOCTUM_ENDERECO + noctum.group(1), noctum.group(2)
+            else:
+                operation, thread, pedido, answer = match.groups()
+        recebido = datetime.fromtimestamp(float(ts), timezone.utc)
+        age = (datetime.now(timezone.utc) - recebido).total_seconds()
+        key = os.environ.get('ORK_HITL_INGRESS_KEY_HERMES', '')
+        root = os.environ.get('ORK_HITL_ROOT', '')
+        if not 0 <= age <= 60 or len(key.encode()) < 32 or not os.path.isabs(root):
+            return _status()
+        envelope = {'resposta': answer, 'canal': CANAL, 'origem': 'slack', 'por': f'slack:{team}:{user}',
+                    'mensagem': f'slack:{team}:{channel}:{ts}',
+                    'recebidoEm': recebido.isoformat(timespec='milliseconds').replace('+00:00', 'Z')}
+        body = ['ork.hitl-answer/v2', thread, pedido, CANAL, None, envelope['origem'], envelope['por'],
+                envelope['mensagem'], envelope['recebidoEm'], answer]
+        envelope['prova'] = hmac.new(key.encode(), json.dumps(body, ensure_ascii=False, separators=(',', ':')).encode(), hashlib.sha256).hexdigest()
+        argv = _slack_argv(operation, thread, pedido, envelope)
+        loop = asyncio.get_running_loop()
+        identity = (root, 'slack', team, channel, ts)
+        fingerprint = operation + ':' + envelope['prova']
+        previous = _entries.get(identity)
+        if previous:
+            return _status(previous, replay=True) if hmac.compare_digest(previous['fingerprint'], fingerprint) else _status()
+        for identity_old, old in list(_entries.items()):
+            if old['done'] and time.monotonic() >= old['expires']:
+                del _entries[identity_old]
+        if len(_entries) >= MAX_ENTRIES or len(_tasks) >= MAX_PENDING:
+            return _status()
+        entry = {'fingerprint': fingerprint, 'effect': 'pending', 'confirmation': 'not_attempted',
+                 'done': False, 'expires': time.monotonic() + 61,
+                 'ref': hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:16]}
+        _entries[identity] = entry
+        adapter = (getattr(gateway, 'adapters', None) or {}).get(source.platform)
+        thread_ts = raw.get('thread_ts') or ts
+
+        async def confirm(reply):
+            if adapter is None:
+                return False
+            sent = await adapter.send(channel, reply, reply_to=thread_ts,
+                                      metadata={'scope_id': team, 'thread_id': thread_ts})
+            return getattr(sent, 'success', None) is True and bool(getattr(sent, 'message_id', None))
+
+        work = _deliver(entry, None, operation, pedido, argv, envelope, root, dict(os.environ), confirm=confirm)
         try:
             task = loop.create_task(work)
         except Exception:
