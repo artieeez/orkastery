@@ -61,7 +61,21 @@ export const CONTRATO_CANAIS = 'ork.hitl-canais/v1' as const;
 export type Canal = Host;
 
 /** O meio fisico. Dois canais podem compartilhar transporte sem deixar de ser dois canais. */
-export type Transporte = 'telegram' | 'mcp-local' | 'native';
+export type Transporte = 'telegram' | 'slack' | 'mcp-local' | 'native';
+
+/**
+ * Os transportes cujo ingresso entrega um envelope assinado com a chave do CANAL (HMAC).
+ *
+ * Slack entra como segundo transporte do canal `hermes`, nao como canal novo: o canal e o
+ * host, e o Hermes e o mesmo host atendendo por dois meios. A chave continua sendo a do
+ * canal (FX1), e o transporte vai assinado no corpo como `origem`, entao um envelope do
+ * Telegram nunca vale como Slack nem o contrario.
+ */
+export type TransporteAssinado = 'telegram' | 'slack';
+export const TRANSPORTES_ASSINADOS: readonly TransporteAssinado[] = ['telegram', 'slack'];
+export function ehTransporteAssinado(v: unknown): v is TransporteAssinado {
+  return typeof v === 'string' && (TRANSPORTES_ASSINADOS as readonly string[]).includes(v);
+}
 
 /** O adaptador que entrega conteudo humano ao nucleo. A lista e fechada de proposito. */
 export type Ingresso = 'evento-nativo-openclaw' | 'evento-nativo-hermes' | 'elicitation-mcp';
@@ -125,6 +139,18 @@ export interface DefinicaoDeCanal {
   recibo: string;
   /** Variaveis de ambiente sem as quais o canal nao aceita resposta. */
   exigencias: readonly string[];
+  /**
+   * Outros transportes assinados que o MESMO ingresso atende, com a MESMA chave do canal.
+   * Cada um tem identidade, correlacao e exigencias proprias; o recibo e o do canal.
+   */
+  alternativos?: readonly AlternativaDeTransporte[];
+}
+
+export interface AlternativaDeTransporte {
+  transporte: Exclude<TransporteAssinado, 'telegram'>;
+  identidade: string;
+  correlacao: string;
+  exigencias: readonly string[];
 }
 
 /**
@@ -153,6 +179,13 @@ export const CANAIS: Readonly<Record<Canal, DefinicaoDeCanal>> = {
     recibo: 'ingresso duravel em .orkastery/threads/<t>/hitl-ingress/<sha>.json, com MAC proprio e sha256 no ledger',
     exigencias: ['ORK_HITL_ROOT', 'ORK_HITL_TELEGRAM_BOT_ID', 'ORK_HITL_INGRESS_KEY_HERMES',
       'ORK_HITL_TELEGRAM_USERS', 'ORK_HITL_TELEGRAM_CHATS'],
+    alternativos: [{
+      transporte: 'slack',
+      identidade: 'slack:<teamId>:<userId> da allowlist, com canal=hermes e origem=slack assinados no corpo do envelope',
+      correlacao: 'pedidoId e mensagem slack:<teamId>:<channelId>:<ts>, ambos dentro do HMAC',
+      exigencias: ['ORK_HITL_ROOT', 'ORK_HITL_SLACK_BOT_ID', 'ORK_HITL_INGRESS_KEY_HERMES',
+        'ORK_HITL_SLACK_TEAM', 'ORK_HITL_SLACK_USERS', 'ORK_HITL_SLACK_CHANNELS'],
+    }],
   },
   'claude-code': {
     canal: 'claude-code',
@@ -201,6 +234,54 @@ export function canaisDoTransporte(transporte: Transporte): readonly Canal[] {
 
 export function transporteDoCanal(bruto: string | undefined | null): Transporte {
   return definicaoDoCanal(bruto).transporte;
+}
+
+/** O transporte principal do canal e os alternativos, nessa ordem. */
+export function transportesDoCanal(bruto: string | undefined | null): readonly Transporte[] {
+  const d = definicaoDoCanal(bruto);
+  return [d.transporte, ...(d.alternativos ?? []).map((a) => a.transporte)];
+}
+
+/** O canal atende pelo transporte assinado `origem`? Envelope v1 (sem canal) so existe no Telegram. */
+export function canalAtendePor(canal: Canal | null, origem: unknown): origem is TransporteAssinado {
+  if (!ehTransporteAssinado(origem)) return false;
+  return canal === null ? origem === 'telegram' : transportesDoCanal(canal).includes(origem);
+}
+
+const lista = (v: string | undefined): string[] => (v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const AUTOR_SLACK = /^slack:(T[A-Z0-9]{2,20}):([UW][A-Z0-9]{2,20})$/;
+const MENSAGEM_SLACK = /^slack:(T[A-Z0-9]{2,20}):([CGD][A-Z0-9]{2,20}):(\d{1,12}\.\d{1,8})$/;
+
+/** A forma do `por` (e do `autorizadoPor` gravado) de cada transporte assinado. */
+export function autorDoTransporteValido(origem: unknown, por: unknown): boolean {
+  if (typeof por !== 'string') return false;
+  if (origem === 'telegram') return /^telegram:\d+$/.test(por);
+  if (origem === 'slack') return AUTOR_SLACK.test(por);
+  return false;
+}
+
+/**
+ * A proveniencia de um envelope assinado: a pessoa e a conversa estao nas allowlists do
+ * transporte. Fica aqui, e so aqui, para o gate, a sessao, o pulse e o noctum conferirem
+ * a MESMA regra. Nao confere assinatura nem janela: isso e de `autenticarResposta`.
+ */
+export function provenienciaDoTransporte(origem: unknown, por: unknown, mensagem: unknown,
+  env: NodeJS.ProcessEnv = process.env): boolean {
+  if (typeof por !== 'string' || typeof mensagem !== 'string') return false;
+  if (origem === 'telegram') {
+    const usuario = /^telegram:(\d+)$/.exec(por);
+    const chat = /^telegram:(-?\d+):([a-zA-Z0-9_-]{1,100})$/.exec(mensagem);
+    return !!usuario && !!chat && lista(env.ORK_HITL_TELEGRAM_USERS).includes(usuario[1]) &&
+      lista(env.ORK_HITL_TELEGRAM_CHATS).includes(chat[1]);
+  }
+  if (origem === 'slack') {
+    const autor = AUTOR_SLACK.exec(por), msg = MENSAGEM_SLACK.exec(mensagem);
+    const time = (env.ORK_HITL_SLACK_TEAM ?? '').trim();
+    // O workspace entra nos dois lados: ids de usuario e de canal so sao unicos dentro dele.
+    return !!autor && !!msg && !!time && autor[1] === time && msg[1] === time &&
+      lista(env.ORK_HITL_SLACK_USERS).includes(autor[2]) && lista(env.ORK_HITL_SLACK_CHANNELS).includes(msg[2]);
+  }
+  return false;
 }
 
 /**
@@ -254,10 +335,20 @@ export function conferirRegistro(): { contrato: typeof CONTRATO_CANAIS; canais: 
       if (!d.exigencias.includes(chave)) throw new Error(`hitl.canal.chave-fora-das-exigencias: ${d.canal}`);
     }
     const conta = VARIAVEL_DA_CONTA[d.canal];
-    if (conta !== null && !d.exigencias.includes(conta)) throw new Error(`hitl.canal.conta-fora-das-exigencias: ${d.canal}`);
+    if (conta !== null && !d.exigencias.includes(conta)) throw new Error(`hitl.canal.conta-fora-das-exigencias: ${d.canal}`);    // O transporte alternativo herda a chave do canal: ela precisa estar nas exigencias dele,
+    // e a identidade dele tambem nao pode repetir a de nenhum outro canal ou transporte.
+    for (const a of d.alternativos ?? []) {
+      if (!ehTransporteAssinado(a.transporte) || a.transporte === d.transporte) {
+        throw new Error(`hitl.canal.transporte-alternativo-invalido: ${d.canal}`);
+      }
+      if (!a.identidade.trim() || !a.correlacao.trim()) throw new Error(`hitl.canal.sem-identidade: ${d.canal}/${a.transporte}`);
+      if (chave === null || !a.exigencias.includes(chave)) throw new Error(`hitl.canal.chave-fora-das-exigencias: ${d.canal}/${a.transporte}`);
+      if (vistos.has(a.identidade)) throw new Error(`hitl.canal.identidade-ambigua: ${d.canal}/${a.transporte}`);
+      vistos.add(a.identidade);
+    }
   }
   return { contrato: CONTRATO_CANAIS, canais: canais.length,
-    transportes: new Set(canais.map((c) => c.transporte)).size, chaves: chaves.size };
+    transportes: new Set(canais.flatMap((c) => transportesDoCanal(c.canal))).size, chaves: chaves.size };
 }
 
 export interface CanalOferecido {
@@ -298,20 +389,20 @@ export function ofertaDeCanais(ambiente: AmbienteDeCanais = {}): readonly CanalO
   const chavesTelegramIguais = chaveHermes.length > 0 && chaveOpenClaw.length > 0 &&
     createHash('sha256').update(chaveHermes).digest('hex') ===
       createHash('sha256').update(chaveOpenClaw).digest('hex');
-  return canaisHomologados().map((d) => {
-    const faltando = d.exigencias.filter((nome) => !(env[nome] ?? '').trim());
-    if (faltando.length) {
-      return { canal: d.canal, transporte: d.transporte, estado: 'indisponivel' as const,
-        motivo: `hitl.credencial: ausente ${faltando.join(', ')}` };
-    }
-    if (d.transporte === 'telegram') {
-      const raiz = env.ORK_HITL_ROOT ?? '';
+  // Uma oferta por canal: o primeiro transporte do canal que estiver provisionado e valido.
+  // Sem nenhum, o motivo e o do transporte principal, como sempre foi.
+  const motivoDoTransporte = (d: DefinicaoDeCanal, transporte: Transporte, exigencias: readonly string[]): string => {
+    const faltando = exigencias.filter((nome) => !(env[nome] ?? '').trim());
+    if (faltando.length) return `hitl.credencial: ausente ${faltando.join(', ')}`;
+    const nomeChave = VARIAVEL_DA_CHAVE[d.canal];
+    const chave = nomeChave ? env[nomeChave] ?? '' : '';
+    const raiz = env.ORK_HITL_ROOT ?? '';
+    let invalidas: string[] = [];
+    if (transporte === 'telegram') {
       const bot = env.ORK_HITL_TELEGRAM_BOT_ID ?? '';
       const usuarios = (env.ORK_HITL_TELEGRAM_USERS ?? '').split(',').map(v => v.trim()).filter(Boolean);
       const chats = (env.ORK_HITL_TELEGRAM_CHATS ?? '').split(',').map(v => v.trim()).filter(Boolean);
-      const nomeChave = VARIAVEL_DA_CHAVE[d.canal];
-      const chave = nomeChave ? env[nomeChave] ?? '' : '';
-      const invalidas = [
+      invalidas = [
         !pathAbsoluto(raiz) ? 'ORK_HITL_ROOT deve ser absoluto' : '',
         !/^\d+$/.test(bot) ? 'ORK_HITL_TELEGRAM_BOT_ID deve ser numerico' : '',
         usuarios.length === 0 || usuarios.some(v => !/^\d+$/.test(v))
@@ -321,11 +412,34 @@ export function ofertaDeCanais(ambiente: AmbienteDeCanais = {}): readonly CanalO
         Buffer.byteLength(chave) < 32 ? `${nomeChave} deve ter ao menos 32 bytes` : '',
         chavesTelegramIguais ? 'chaves de Hermes e OpenClaw devem ser distintas' : '',
       ].filter(Boolean);
-      if (invalidas.length) {
-        return { canal: d.canal, transporte: d.transporte, estado: 'indisponivel' as const,
-          motivo: `hitl.credencial: invalida (${invalidas.join('; ')})` };
-      }
+    } else if (transporte === 'slack') {
+      const bot = env.ORK_HITL_SLACK_BOT_ID ?? '';
+      const time = env.ORK_HITL_SLACK_TEAM ?? '';
+      const usuarios = (env.ORK_HITL_SLACK_USERS ?? '').split(',').map(v => v.trim()).filter(Boolean);
+      const canais = (env.ORK_HITL_SLACK_CHANNELS ?? '').split(',').map(v => v.trim()).filter(Boolean);
+      invalidas = [
+        !pathAbsoluto(raiz) ? 'ORK_HITL_ROOT deve ser absoluto' : '',
+        !/^[UW][A-Z0-9]{2,20}$/.test(bot) ? 'ORK_HITL_SLACK_BOT_ID deve ser o id de usuario do bot (U...)' : '',
+        !/^T[A-Z0-9]{2,20}$/.test(time) ? 'ORK_HITL_SLACK_TEAM deve ser o id do workspace (T...)' : '',
+        usuarios.length === 0 || usuarios.some(v => !/^[UW][A-Z0-9]{2,20}$/.test(v))
+          ? 'ORK_HITL_SLACK_USERS deve ser allowlist de ids de usuario' : '',
+        canais.length === 0 || canais.some(v => !/^[CGD][A-Z0-9]{2,20}$/.test(v))
+          ? 'ORK_HITL_SLACK_CHANNELS deve ser allowlist de ids de conversa' : '',
+        Buffer.byteLength(chave) < 32 ? `${nomeChave} deve ter ao menos 32 bytes` : '',
+        chavesTelegramIguais ? 'chaves de Hermes e OpenClaw devem ser distintas' : '',
+      ].filter(Boolean);
     }
+    return invalidas.length ? `hitl.credencial: invalida (${invalidas.join('; ')})` : '';
+  };
+  return canaisHomologados().map((d) => {
+    const opcoes = [{ transporte: d.transporte, exigencias: d.exigencias },
+      ...(d.alternativos ?? []).map((a) => ({ transporte: a.transporte as Transporte, exigencias: a.exigencias }))];
+    const motivos = opcoes.map((o) => motivoDoTransporte(d, o.transporte, o.exigencias));
+    const ok = motivos.findIndex((m) => !m);
+    if (ok < 0) {
+      return { canal: d.canal, transporte: d.transporte, estado: 'indisponivel' as const, motivo: motivos[0] };
+    }
+    if (ok > 0) return { canal: d.canal, transporte: opcoes[ok].transporte, estado: 'disponivel' as const, motivo: '' };
     if (d.transporte === 'mcp-local' && !conexoes.has(d.canal)) {
       return { canal: d.canal, transporte: d.transporte, estado: 'indisponivel' as const,
         motivo: 'hitl.canal.sem-conexao: nenhuma sessao MCP deste host esta ligada a esta thread' };

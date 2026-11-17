@@ -15,11 +15,13 @@ def texto_seguro(message):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--target', required=True, help='Destino explícito: telegram:chat_id[:topic_id]')
+    parser.add_argument('--target', required=True,
+                        help='Destino explícito: telegram:chat_id[:topic_id] ou slack:CONVERSA[:thread_ts]')
     parser.add_argument('--message', required=True)
     args = parser.parse_args()
-    if not re.fullmatch(r'telegram:-?\d+(?::\d+)?', args.target):
-        parser.error('use identificador explícito do chat Telegram autorizado')
+    if not (re.fullmatch(r'telegram:-?\d+(?::\d+)?', args.target)
+            or re.fullmatch(r'slack:[CGD][A-Z0-9]{2,20}(?::\d{1,12}\.\d{1,8})?', args.target)):
+        parser.error('use identificador explícito do chat Telegram ou da conversa Slack autorizada')
     home = Path(os.environ.get('HERMES_HOME', Path.home() / '.hermes'))
     agent = Path(os.environ.get('HERMES_AGENT_DIR', home / 'hermes-agent'))
     sys.path.insert(0, str(agent))

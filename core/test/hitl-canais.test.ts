@@ -21,8 +21,9 @@ test('D12: sao quatro canais homologados, na ordem dos hosts, e o registro confe
   assert.equal(canais.length, 4);
   assert.deepEqual(canais.map(c => c.canal), ['claude-code', 'codex', 'hermes', 'openclaw']);
   assert.deepEqual([...ORDEM_DOS_CANAIS], [...ORDEM_DOS_HOSTS]);
-  assert.deepEqual(conferirRegistro(), { contrato: CONTRATO_CANAIS, canais: 4, transportes: 2, chaves: 2 });
-  // Os dois transportes preservados: reduzir qualquer um deles reduz canais.
+  // telegram, mcp-local e o slack, que e transporte alternativo do Hermes (nao um canal a mais).
+  assert.deepEqual(conferirRegistro(), { contrato: CONTRATO_CANAIS, canais: 4, transportes: 3, chaves: 2 });
+  // Os dois transportes principais preservados: reduzir qualquer um deles reduz canais.
   assert.deepEqual([...canaisDoTransporte('telegram')], ['hermes', 'openclaw']);
   assert.deepEqual([...canaisDoTransporte('mcp-local')], ['claude-code', 'codex']);
   assert.equal(transporteDoCanal('claude'), 'mcp-local');

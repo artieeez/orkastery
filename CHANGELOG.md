@@ -6,6 +6,10 @@ nova para a mais antiga. O detalhe de cada item, com a evidência de merge, est�
 
 ## Não publicado
 
+### Adicionado
+
+- **Slack pelo Hermes:** o canal `hermes` passa a atender também pelo Slack, como segundo transporte assinado com a mesma chave do canal. O dono responde gate, sessão, resumo do pulse e noctum pelo Slack (`@Hermes /ork gate ...`, `P4EJ a`, `1a 2c`), com workspace, pessoa e conversa nas allowlists e a origem dentro do HMAC; o pulse sai para `slack:<conversa>[:<thread_ts>]`. O OpenClaw continua só no Telegram.
+
 ## [0.6.10] - 2026-11-12
 
 A rede coletiva da empresa avisa antes do merge quando threads de builders diferentes tocam o mesmo item ou os mesmos arquivos, com uma ordem sugerida (RM-089, F3). O CI emite o recibo básico do verify para o HEAD executado, com a receita ancorada na branch de destino (RM-089, F5). O SDLC Analytics calcula seis indicadores agênticos por maestro e por time, com o evento ratificado e o painel de referência (RM-090, F5).

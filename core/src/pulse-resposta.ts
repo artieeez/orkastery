@@ -495,6 +495,21 @@ export function chatDoTelegram(ref: string | null | undefined): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * A conversa de um envelope ou de um destino, em qualquer transporte assinado, para comparar "o mesmo chat".
+ * Telegram devolve o chat como `chatDoTelegram`; Slack devolve `slack:<canal>` do envelope
+ * (`slack:<time>:<canal>:<ts>`) e do destino (`slack:<canal>[:<thread_ts>]`). Os dois espaços nunca se confundem.
+ */
+export function conversaDoCanal(ref: string | null | undefined): string | null {
+  const tg = chatDoTelegram(ref);
+  if (tg !== null) return tg;
+  const r = String(ref ?? '');
+  const envelope = /^slack:T[A-Z0-9]{2,20}:([CGD][A-Z0-9]{2,20}):\d{1,12}\.\d{1,8}$/.exec(r);
+  const destino = /^slack:([CGD][A-Z0-9]{2,20})(?::\d{1,12}\.\d{1,8})?$/.exec(r);
+  const canal = envelope?.[1] ?? destino?.[1];
+  return canal ? `slack:${canal}` : null;
+}
+
 export interface PerguntaDoArcoServida {
   numero: number | null; entregue: boolean; jaServida: boolean; host: string | null; destino: string | null;
   /** GO-FIX 1 (achado 2): os ids da mensagem em que a pergunta saiu; só o reply a uma delas responde a ela. */
@@ -610,9 +625,9 @@ function responderEmReply(raiz: string, envelope: RespostaHumana, lido: Resposta
   const { quando, canal, estadoDir } = opcoes, tg = canal === 'telegram';
   const volta = (texto: string, motivo: string) => resultado('codigo', `${tg ? '⚠️ ' : '! '}${texto}`, { recusas: [{ motivo }] });
   const ref = lerReferenciaDoReply(referencia)!;
-  const chat = chatDoTelegram(envelope.mensagem);
+  const chat = conversaDoCanal(envelope.mensagem);
   const servida = lerLoteServido(raiz, estadoDir).perguntas.find(q => q.arco?.codigo === ref.codigo &&
-    (q.arco.mensagens ?? []).includes(ref.mensagem) && chat !== null && chatDoTelegram(q.arco.destino) === chat);
+    (q.arco.mensagens ?? []).includes(ref.mensagem) && chat !== null && conversaDoCanal(q.arco.destino) === chat);
   if (!servida) {
     return volta(`A mensagem que você respondeu não é a da pergunta ${ref.codigo} como o Orkastery a entregou neste chat; nada foi ` +
       `registrado. Responda à mensagem da pergunta, ou mande ${ref.codigo} com a letra.`, 'reply.fora-da-pergunta');
@@ -1038,7 +1053,7 @@ function responderLivre(raiz: string, envelope: RespostaHumana, trecho: TrechoLi
   if (p.arco) {
     // RM-057 (resposta curta, D3 e D4): "sem reply, vale se houver uma só pendente no canal". O canal é o chat em que a
     // pergunta saiu: a palavra de outro chat volta como pergunta, com o código.
-    const destino = chatDoTelegram(p.arco.destino), chat = chatDoTelegram(envelope.mensagem);
+    const destino = conversaDoCanal(p.arco.destino), chat = conversaDoCanal(envelope.mensagem);
     if (destino && chat && destino !== chat) {
       return volta(`A pergunta que espera você saiu por outro chat; palavra solta não registra. Responda: ${p.arco.codigo} a ` +
         `(arco ${p.arco.arco}: ${p.arco.ato}), ou responda à mensagem dela.`, 'outro-chat');

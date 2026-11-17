@@ -20,11 +20,33 @@ the Hermes venv and an explicit target `telegram:chat_id[:topic_id]`:
 }
 ```
 
+The same script delivers to Slack with `slack:ID[:thread_ts]` (ids `C...`, `G...` or `D...`),
+over the Slack connection Hermes already keeps.
+
 Save the configuration in `.orkastery/monitor/pulse-host.json` (`ork onboarding` already writes it
 ready; see RM-063 below). `HERMES_HOME` and
 `HERMES_AGENT_DIR` let it find another installation; by default it uses `~/.hermes`.
 The adapter loads the host environment internally, without printing credentials.
 `MEDIA:` markers present in the runtime text are neutralized so that no local files get attached.
+
+## Slack
+
+The HITL ingress (`hitl-ingress/`) serves Slack as well as Telegram, as a second transport of the
+`hermes` channel, signed with the same `ORK_HITL_INGRESS_KEY_HERMES`. Variables (names; the values live
+in the host environment):
+
+| Variable | Value |
+|---|---|
+| `ORK_HITL_SLACK_BOT_ID` | the bot's user id (`U...`, the `user_id` from `auth.test`) |
+| `ORK_HITL_SLACK_TEAM` | the workspace id (`T...`) |
+| `ORK_HITL_SLACK_USERS` | user ids allowed to answer, comma-separated |
+| `ORK_HITL_SLACK_CHANNELS` | ids of the accepted conversations (`C...`, `G...` or the DM `D...`) |
+
+Only the original human message counts: an edit, a bot or app message, text that differs from the event
+and a message older than 60 s go to the assistant with no effect. A message starting with `/` becomes a
+slash command in the Slack client, so commands carry the mention: `@Hermes /ork gate <thread> <pedido> <resposta>`.
+The summary code (`P4EJ a`), the batch (`1a 2c`) and `#OrkPulse...` go as text. Replying in thread to the
+arc question is still Telegram only. The confirmation comes back in the same thread.
 
 Hermes becomes the Orkastery **podium**: a thin router skill, a plugin that declares it and a script
 that opens a thread from the builder's raw request.

@@ -14,7 +14,7 @@ import { consumirAtestadoLocal, hashPedidoLocal, reciboDoAtestado } from './hitl
 import { gravarEvidenciaLocalSessao } from './hitl-local-receipt';
 import { evidenciaDoIngresso, validarEvidenciaReconstruida } from './hitl-ingress-receipt';
 import { redigirSegredos } from './hitl';
-import { conferirCanalSelecionado } from './hitl-canais';
+import { conferirCanalSelecionado, ehTransporteAssinado } from './hitl-canais';
 import { PerguntaNativa, projetarPergunta } from './adapters/codex-question';
 import { CaixaDeSaida, controleClaudeBgPorMod } from './entrega-por-mod';
 
@@ -443,7 +443,7 @@ function evidenciaReconciliada(raiz: string, id: string, origem: Record<string, 
   const mensagem = typeof origem.mensagem === 'string' ? origem.mensagem : '';
   const nome = createHash('sha256').update(mensagem).digest('hex') + '.json';
   const file = path.join(dirThread(raiz, id), 'hitl-ingress', nome);
-  if (origem.origem === 'telegram' || origem.origem === 'native') {
+  if (ehTransporteAssinado(origem.origem) || origem.origem === 'native') {
     // FX10: um envio de telegram SEM ingresso duravel nao pode cair no recibo do controller.
     // Esse desvio transformava o sumico do arquivo de prova em um caminho mais permissivo,
     // que e exatamente o contrario do que apagar a prova deveria causar.

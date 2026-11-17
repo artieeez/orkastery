@@ -23,14 +23,15 @@ import { consumirAtestadoLocal, hashPedidoLocal } from './hitl-local-atestado';
 import type { ResultadoDecisaoLocal } from './hitl-local';
 import { gravarEvidenciaLocal } from './hitl-local-receipt';
 import { publicarAprovacaoHumana, PublicacaoDeAprovacao } from './memoria-humana';
-import { Canal, conferirCanalSelecionado } from './hitl-canais';
+import { Canal, conferirCanalSelecionado, ehTransporteAssinado, provenienciaDoTransporte, TransporteAssinado } from './hitl-canais';
 import { NativeAnswer, NativeContext, authenticateNative, nativeContextSchema, nativeSignature } from './hitl-native';
 import { exigirModoVivo } from './modos';
 import { ErroDoCatalogo, msg } from './locale';
 
 export interface RespostaHumana {
   resposta: string;
-  origem: 'telegram' | 'native';
+  /** O transporte assinado (`telegram` ou `slack`, ver `TRANSPORTES_ASSINADOS`) ou o callback nativo. */
+  origem: TransporteAssinado | 'native';
   native?: NativeContext;
   por: string;
   mensagem: string;
@@ -104,12 +105,10 @@ export function autenticarResposta(thread: string, pedido: string, r: RespostaHu
   const canal = canalDoEnvelope(r);
   contaDoEnvelope(canal, r.conta);
   const chave = chaveDoIngresso(canal);
-  const usuarios = (process.env.ORK_HITL_TELEGRAM_USERS ?? '').split(',').map(s => s.trim());
-  const chats = (process.env.ORK_HITL_TELEGRAM_CHATS ?? '').split(',').map(s => s.trim());
-  const usuario = /^telegram:(\d+)$/.exec(r.por ?? '');
-  const mensagem = /^telegram:(-?\d+):([a-zA-Z0-9_-]{1,100})$/.exec(r.mensagem ?? '');
+  // `canalDoEnvelope` ja amarrou a origem a um transporte que o canal atende; aqui a pessoa e a
+  // conversa precisam estar nas allowlists DESSE transporte, pela regra unica do registro.
   const idade = Date.parse(quando) - Date.parse(r.recebidoEm);
-  if (r.origem !== 'telegram' || !usuario || !mensagem || !usuarios.includes(usuario[1]) || !chats.includes(mensagem[1]) ||
+  if (!ehTransporteAssinado(r.origem) || !provenienciaDoTransporte(r.origem, r.por, r.mensagem) ||
       !Number.isFinite(idade) || idade < 0 || idade > 60000 || typeof r.resposta !== 'string' || r.resposta.length > 4096 ||
       !/^[a-f0-9]{64}$/.test(r.prova ?? '')) throw new Error('resposta humana sem proveniência válida');
   const esperado = assinaturaDaResposta(thread, pedido, r, chave);
@@ -448,7 +447,7 @@ function provaDaResposta(id: string, pedidoId: string, resposta: RespostaHumana,
   if (assinado.alvo !== ALVO_DO_PULSE || assinado.endereco !== ENDERECO_DA_RESPOSTA) {
     throw new Error('endereço assinado fora do pulse não prova resposta a outro pedido');
   }
-  if (envelope.origem !== 'telegram' || resposta.native !== undefined || envelope.native !== undefined ||
+  if (!ehTransporteAssinado(envelope.origem) || resposta.native !== undefined || envelope.native !== undefined ||
       CAMPOS_QUE_A_DERIVADA_PRESERVA.some(c => resposta[c] !== envelope[c])) {
     throw new Error('resposta derivada diverge do envelope assinado pelo ingresso');
   }
