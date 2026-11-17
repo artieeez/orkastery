@@ -7,7 +7,8 @@
  * (`canal: { host, destino }`) e grava o `.orkastery/monitor/pulse-host.json` desta maquina com o modelo pronto do host:
  *
  *  - `openclaw`: `openclaw message send --channel telegram --target <chat> --message {{mensagem}} --json`;
- *  - `hermes`: o Python do venv do Hermes com o `ork-pulse-enviar.py` do adaptador e `--target telegram:<chat>[:<topico>]`.
+ *  - `hermes`: o Python do venv do Hermes com o `ork-pulse-enviar.py` do adaptador e `--target telegram:<chat>[:<topico>]`
+ *    ou `--target slack:<canal>[:<thread_ts>]` (o Slack so existe pelo Hermes).
  *
  * O canal de um host novo vira o principal, e o do outro host que ja estava fica como alternativo (H4): a entrega tenta o
  * outro quando o primeiro falha. O arquivo e desta maquina e nunca vai ao git (RM-047).
@@ -26,7 +27,7 @@ export type HostDoCanal = typeof HOSTS_DO_CANAL[number];
 /** O canal do dono como a etapa `maestro` do onboarding o guarda. */
 export interface CanalDoDono {
   host: HostDoCanal;
-  /** O chat autorizado: `telegram:<chat>` (e, no Hermes, `telegram:<chat>:<topico>`). */
+  /** O chat autorizado: `telegram:<chat>` (e, no Hermes, `telegram:<chat>:<topico>` ou `slack:<canal>[:<thread_ts>]`). */
   destino: string;
   /** O executavel do host, quando nao e o do PATH (OpenClaw) ou o do venv do Hermes. */
   executavel?: string;
@@ -41,6 +42,8 @@ export interface TransporteDoHost { executavel: string; argumentos: string[]; ho
 export interface TransportePulse extends TransporteDoHost { alternativos?: TransporteDoHost[] }
 
 export const DESTINO_DO_CANAL = /^telegram:(-?\d{1,20})(?::(\d{1,12}))?$/;
+/** O destino Slack do Hermes: o id da conversa e, opcionalmente, a thread (`ts` da mensagem raiz). */
+export const DESTINO_SLACK_DO_CANAL = /^slack:([CGD][A-Z0-9]{2,20})(?::(\d{1,12}\.\d{1,8}))?$/;
 const MARCA = '{' + '{mensagem}}';
 const CHAVES_DO_CANAL = ['host', 'destino', 'executavel', 'script'];
 const caminhoAceito = (v: unknown): v is string => typeof v === 'string' && v.length <= 4096 && path.isAbsolute(v) && !/\p{Cc}/u.test(v);
@@ -51,7 +54,11 @@ export function canalValido(v: unknown): v is CanalDoDono {
   const c = v as Record<string, unknown>;
   if (Object.keys(c).some((k) => !CHAVES_DO_CANAL.includes(k))) return false;
   if (!(HOSTS_DO_CANAL as readonly string[]).includes(c.host as string)) return false;
-  if (typeof c.destino !== 'string' || !DESTINO_DO_CANAL.test(c.destino)) return false;
+  if (typeof c.destino !== 'string') return false;
+  const slack = DESTINO_SLACK_DO_CANAL.test(c.destino);
+  if (!DESTINO_DO_CANAL.test(c.destino) && !slack) return false;
+  // O OpenClaw so entrega pelo Telegram; o Slack e um transporte do Hermes.
+  if (slack && c.host !== 'hermes') return false;
   if (c.executavel !== undefined && !caminhoAceito(c.executavel)) return false;
   if (c.script !== undefined && (c.host !== 'hermes' || !caminhoAceito(c.script))) return false;
   // O `message send` do OpenClaw recebe o chat; o topico e do transporte do Hermes.
@@ -89,7 +96,9 @@ export function transporteDoCanal(raiz: string, canal: CanalDoDono, env: NodeJS.
       return falta('o openclaw não está no PATH desta máquina; informe canal.executavel com o caminho absoluto dele');
     }
     if (rastreadoPeloGit(raiz, bin)) return falta(`${bin} está versionado no git: o transporte só vale de um arquivo local desta máquina`);
-    const chat = DESTINO_DO_CANAL.exec(canal.destino)![1];
+    const destino = DESTINO_DO_CANAL.exec(canal.destino);
+    if (!destino) return falta('o OpenClaw só entrega pelo Telegram; o destino slack:<canal> é do Hermes');
+    const chat = destino[1];
     return { host: 'openclaw', destino: canal.destino, executavel: bin,
       argumentos: ['message', 'send', '--channel', 'telegram', '--target', chat, '--message', MARCA, '--json'] };
   }

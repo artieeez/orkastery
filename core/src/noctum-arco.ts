@@ -25,7 +25,7 @@ import * as path from 'node:path';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { exigirEstadoSemLink, raizDoEstado } from './estado-thread';
 import { formatarDataHora } from './horario';
-import { Canal, parseCanal, variavelDaChaveDoCanal } from './hitl-canais';
+import { Canal, ehTransporteAssinado, parseCanal, TransporteAssinado, variavelDaChaveDoCanal } from './hitl-canais';
 import { autenticarResposta, RespostaHumana } from './hitl-gates';
 import { chaveDoIngresso, contaDoEnvelope } from './hitl-ingress-receipt';
 import { LETRAS_DE_ALTERNATIVA, LetraDeAlternativa, MAXIMO_DE_ALTERNATIVAS_DE_CONDUCAO,
@@ -79,7 +79,7 @@ type PerguntaRespondida = RespostaAPergunta & { enderecoAssinado: { alvo: string
 
 /** O que o envelope assinado provou. O corpo assinado nunca entra: só o hash da prova. */
 type IngressoAssinado =
-  | { origem: 'telegram'; canal: string | null; conta: string | null; por: string; mensagem: string;
+  | { origem: TransporteAssinado; canal: string | null; conta: string | null; por: string; mensagem: string;
     recebidoEm: string; recibo: string; pergunta?: PerguntaRespondida }
   | { origem: 'native'; canal: string | null; conta: string | null; por: string; mensagem: string;
     recebidoEm: string; recibo: string; native: Record<string, string> };
@@ -100,8 +100,8 @@ export interface AtestadoDoTerminal {
 
 type IngressoDoTerminal = AtestadoDoTerminal & { origem: 'terminal'; solicitacao: string; por: string; pergunta: RespostaAPergunta };
 
-/** O ingresso do Telegram, o único que a resposta curta pelo canal produz. */
-type IngressoDoTelegram = Extract<IngressoAssinado, { origem: 'telegram' }>;
+/** O ingresso assinado do canal (Telegram ou Slack), o único que a resposta curta pelo canal produz. */
+type IngressoDoTelegram = Extract<IngressoAssinado, { origem: TransporteAssinado }>;
 
 /**
  * Quem autorizou ou revogou, e por qual ingresso. O envelope assinado aponta o recibo durável que a
@@ -697,8 +697,8 @@ function propostaAutorizavel(d: Derivado, envelopeSha256: string, quando: string
  */
 function provarEnvelope(arco: string, texto: string, envelope: RespostaHumana, quando: string,
   amarra: { pedidoSha256: string; contexto: string; prazo?: string }): IngressoAssinado {
-  if (!objeto(envelope) || (envelope.origem !== 'telegram' && envelope.origem !== 'native')) {
-    throw semProva('o ingresso precisa ser o envelope assinado do Telegram ou do callback nativo do host');
+  if (!objeto(envelope) || (!ehTransporteAssinado(envelope.origem) && envelope.origem !== 'native')) {
+    throw semProva('o ingresso precisa ser o envelope assinado do canal (Telegram ou Slack) ou do callback nativo do host');
   }
   try { autenticarResposta(ALVO_DO_NOCTUM, enderecoDoArco(arco), envelope, quando); }
   catch (e) { throw semProva(`ingresso não autenticado (${(e as Error).message})`); }
@@ -707,7 +707,7 @@ function provarEnvelope(arco: string, texto: string, envelope: RespostaHumana, q
   }
   const base = { canal: envelope.canal ?? null, conta: envelope.conta ?? null, por: envelope.por,
     mensagem: envelope.mensagem, recebidoEm: envelope.recebidoEm, recibo: sha(envelope.prova) };
-  if (envelope.origem === 'telegram') return { origem: 'telegram', ...base };
+  if (ehTransporteAssinado(envelope.origem)) return { origem: envelope.origem, ...base };
   const native = nativeContextSchema.parse(envelope.native);
   if (native.pedidoSha256 !== amarra.pedidoSha256 || native.context !== amarra.contexto ||
       (amarra.prazo !== undefined && native.expiresAt !== amarra.prazo)) {
@@ -723,7 +723,7 @@ function dadosDoRecibo(arco: string, ato: Ato, envelopeSha256: string | null, ve
     origem: i.origem, canal: i.canal, conta: i.conta, por: i.por, mensagem: i.mensagem, recebidoEm: i.recebidoEm,
     recibo: i.recibo, ...(i.origem === 'native' ? { native: i.native } : {}),
     // RM-057 (resposta curta, D7): a pergunta e o endereço que o gateway assinou entram no MAC do canal.
-    ...(i.origem === 'telegram' && i.pergunta ? { pergunta: i.pergunta } : {}) };
+    ...(i.origem !== 'native' && i.pergunta ? { pergunta: i.pergunta } : {}) };
 }
 
 function lerPrivado(file: string): Buffer {
@@ -900,7 +900,7 @@ function provarRespostaCurta(prova: ProvaDaRespostaCurta, quando: string): Ingre
   const pergunta = validarRespostaAPergunta(prova.pergunta);
   if (prova.via === 'pulse') {
     const e = prova.envelope;
-    if (!objeto(e) || e.origem !== 'telegram') throw semProva('a resposta curta pelo canal precisa do envelope assinado do Telegram');
+    if (!objeto(e) || !ehTransporteAssinado(e.origem)) throw semProva('a resposta curta pelo canal precisa do envelope assinado do canal');
     // GO-FIX 1 (achado 4): o endereço assinado é o do pulse ou o do reply à MESMA pergunta, `resposta:<código dela>:<id>`;
     // o recibo nunca diz uma pergunta e autoriza outra.
     const ref = typeof prova.endereco === 'string' && prova.endereco.startsWith(`${ENDERECO_DA_RESPOSTA}:`)
@@ -915,7 +915,7 @@ function provarRespostaCurta(prova: ProvaDaRespostaCurta, quando: string): Ingre
     if (typeof e.resposta !== 'string' || sha(e.resposta) !== pergunta.respostaSha256) {
       throw semProva('o texto assinado não é a resposta que o núcleo leu');
     }
-    return { origem: 'telegram', canal: e.canal ?? null, conta: e.conta ?? null, por: e.por, mensagem: e.mensagem,
+    return { origem: e.origem, canal: e.canal ?? null, conta: e.conta ?? null, por: e.por, mensagem: e.mensagem,
       recebidoEm: e.recebidoEm, recibo: sha(e.prova), pergunta: { ...pergunta, enderecoAssinado: { alvo: ALVO_DO_PULSE, endereco: prova.endereco } } };
   }
   if (prova.via === 'terminal') {
@@ -1042,7 +1042,7 @@ export function autorizarPelaResposta(raiz: string, arco: string, codigo: string
     const provado = provarRespostaCurta(prova, quando);
     if (provado.pergunta?.codigo !== codigo) throw semProva('a prova responde a outra pergunta');
     exigirDepoisDaPergunta(provado, proposta.em);
-    if (provado.origem === 'telegram') reivindicarMensagem(raiz, chaveDaProva(provado), { arco, codigo, ato: 'autorizar' }, quando);
+    if (provado.origem !== 'terminal') reivindicarMensagem(raiz, chaveDaProva(provado), { arco, codigo, ato: 'autorizar' }, quando);
     if (d.autorizacao?.envelopeSha256 === proposta.envelopeSha256 && d.autorizacao.versao === proposta.versao && !d.revogacao) {
       const atual = estadoDe(arco, d, quando);
       if (atual.situacao === 'encerrado') {
@@ -1076,7 +1076,7 @@ export function revogarPelaResposta(raiz: string, arco: string, codigo: string, 
     const provado = provarRespostaCurta(prova, quando);
     if (provado.pergunta?.codigo !== codigo) throw semProva('a prova responde a outra pergunta');
     exigirDepoisDaPergunta(provado, pedida.em);
-    if (provado.origem === 'telegram') reivindicarMensagem(raiz, chaveDaProva(provado), { arco, codigo, ato: 'revogar' }, quando);
+    if (provado.origem !== 'terminal') reivindicarMensagem(raiz, chaveDaProva(provado), { arco, codigo, ato: 'revogar' }, quando);
     if (d.revogacao) {
       if (info) { info.repetida = true; info.mesmaProva = chaveDaProva(d.revogacao) === chaveDaProva(provado); }
       return estadoDe(arco, d, quando);

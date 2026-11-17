@@ -11,7 +11,8 @@ import { alvoDoPedido, chavesAceitas, escolhasDoPedido, PedidoHitl, PedidoHitlQu
   prazoDoPedido, respostaAceitaDoPedido, validarPedidoHitl, vereditoDoGate } from './hitl-contract';
 import { publicBindingMatches, publicReceiptAuthority, signPublicReceipt, verifyPublicReceipt } from './hitl-public-receipt';
 import {
-  Canal, parseCanal, transporteDoCanal, variavelDaChaveDoCanal, VARIAVEL_DA_CHAVE, VARIAVEL_DA_CONTA,
+  autorDoTransporteValido, Canal, canalAtendePor, ehTransporteAssinado, parseCanal, variavelDaChaveDoCanal,
+  VARIAVEL_DA_CHAVE, VARIAVEL_DA_CONTA,
 } from './hitl-canais';
 const sha = (s: string | Buffer) => createHash('sha256').update(s).digest('hex');
 function pedidoDoIngresso(raiz: string, id: string, pedidoId: string): PedidoHitlQualquer {
@@ -86,11 +87,15 @@ export function canalDoEnvelope(r: Pick<RespostaHumana, 'canal' | 'origem'>): Ca
     if (r.canal !== 'hermes' && r.canal !== 'openclaw') throw Error('hitl.native.host');
     return r.canal;
   }
-  if (r.canal === undefined) return null;
+  if (r.canal === undefined) {
+    // v1 legado nao declara canal e so existiu no Telegram; Slack sempre assina o canal.
+    if (!canalAtendePor(null, r.origem)) throw new Error('hitl.canal.transporte-divergente: envelope v1 só existe no telegram');
+    return null;
+  }
   const canal = parseCanal(r.canal);
   // Apelido não serve: o valor entra literal no HMAC, então ele tem de ser o nome canônico.
   if (!canal || canal !== r.canal) throw new Error('hitl.canal.desconhecido: envelope declara canal fora do registro');
-  if (transporteDoCanal(canal) !== 'telegram') throw new Error('hitl.canal.transporte-divergente: canal não atende por telegram');
+  if (!canalAtendePor(canal, r.origem)) throw new Error(`hitl.canal.transporte-divergente: canal não atende por ${String(r.origem)}`);
   return canal;
 }
 const mac = (v: unknown, canal: Canal | null, native = false) => createHmac('sha256', native ? nativeKey(String(canal)) : chaveDoIngresso(canal)).update(JSON.stringify(v)).digest('hex');
@@ -156,8 +161,9 @@ function conferirIngresso(raiz: string, id: string, e: EventoLedger, registrado:
     // FX1: a chave e a do canal gravado. Um evento v2 cujo canal saiu do registro, ou cuja
     // variavel de chave nao esta no ambiente, reprova aqui e nao cai na chave global.
     const canal = e.canal == null ? null : parseCanal(String(e.canal));
-    if (e.canal != null && (canal !== e.canal || transporteDoCanal(canal) !== 'telegram')) return false;
     const isNative = e.origem === 'native';
+    if (e.canal != null && (canal !== e.canal || (!isNative && !canalAtendePor(canal, e.origem)))) return false;
+    if (e.canal == null && !isNative && !canalAtendePor(null, e.origem)) return false;
     // Ausência da chave no filho usa só a autoridade pública fixada no startup.
     // Chave presente, porém inválida, continua falhando fechada.
     const keyName = isNative ? `ORK_HITL_NATIVE_KEY_${String(canal).toUpperCase()}` : variavelDaChaveDoCanal(canal);
@@ -176,7 +182,7 @@ function conferirIngresso(raiz: string, id: string, e: EventoLedger, registrado:
     const conta = native ? native.accountId : publicAuthority ? e.conta ?? null :
       contaDoEnvelope(canal, e.conta == null ? undefined : String(e.conta));
     if (!native && publicAuthority && !publicBindingMatches(publicAuthority, conta)) return false;
-    if ((!isNative && (e.origem !== 'telegram' || !/^telegram:\d+$/.test(String(e.autorizadoPor ?? '')))) || typeof e.pedidoId !== 'string' ||
+    if ((!isNative && !autorDoTransporteValido(e.origem, e.autorizadoPor)) || typeof e.pedidoId !== 'string' ||
         typeof e.mensagem !== 'string' || typeof e.recebidoEm !== 'string' ||
         !/^[a-f0-9]{64}$/.test(String(e.recibo ?? '')) || typeof e.evidencia !== 'string' ||
         !/^[a-f0-9]{64}$/.test(String(e.evidenciaSha256 ?? ''))) return false;
@@ -282,7 +288,7 @@ export function gravarIngresso(raiz: string, id: string, pedido: string, r: Resp
  */
 export function prepararRecibosParaDespacho(raiz: string, id: string): void {
   for (const e of lerLedger(dirThread(raiz, id))) {
-    if (!['human_gate', 'session_answered'].includes(e.tipo) || !['telegram', 'native'].includes(String(e.origem))) continue;
+    if (!['human_gate', 'session_answered'].includes(e.tipo) || !(ehTransporteAssinado(e.origem) || e.origem === 'native')) continue;
     const canal = e.canal == null ? null : parseCanal(String(e.canal));
     const keyName = e.origem === 'native' ? `ORK_HITL_NATIVE_KEY_${String(canal).toUpperCase()}` : variavelDaChaveDoCanal(canal);
     if (process.env[keyName] === undefined || !validarEvidenciaDoIngresso(raiz, id, e)) continue;

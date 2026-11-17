@@ -11,6 +11,7 @@
  * inclusive `#Auto`; o que o modo decide e apenas se a AUTORIZACAO espera o humano.
  */
 
+import { ehTransporteAssinado } from './hitl-canais';
 import { EventoLedger, ModoLegado, MotivoGate } from './types';
 import { lerLedger, registrar, TIPOS_DE_EVENTO } from './ledger';
 import { MODOS } from './modos';
@@ -127,7 +128,7 @@ function formaDeAprovacao(e: EventoLedger): boolean {
     // `retry` e `ship` no dia em que o nucleo passasse a emitir v2. Contrato fora da lista
     // continua recusado, e a prova do recibo, que e quem de fato autoriza, nao muda.
     ehContratoDePedido(e.contrato) && typeof e.pedidoId === 'string' && typeof e.recibo === 'string' &&
-    ((e.origem === 'telegram' || e.origem === 'native') && typeof e.mensagem === 'string' ||
+    ((ehTransporteAssinado(e.origem) || e.origem === 'native') && typeof e.mensagem === 'string' ||
       e.origem === 'mcp-local' && e.proveniencia === 'ork.mcp-elicitation/v1' && e.source === 'human' &&
       ['mcp-local:codex', 'mcp-local:claude-code'].includes(String(e.autorizadoPor)) &&
       typeof e.conexao === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(e.conexao) &&
@@ -154,7 +155,7 @@ export function aprovacaoHumanaProvada(raiz: string, threadId: string, e: Evento
  */
 export function reciboHumanoConfere(raiz: string, threadId: string, e: EventoLedger): boolean {
   if (e.tipo !== TIPOS_DE_EVENTO.pausaHumana) return false;
-  if (e.origem === 'telegram' || e.origem === 'native') return validarEvidenciaDoIngresso(raiz, threadId, e);
+  if (ehTransporteAssinado(e.origem) || e.origem === 'native') return validarEvidenciaDoIngresso(raiz, threadId, e);
   return validarEvidenciaLocal(raiz, threadId, e);
 }
 
