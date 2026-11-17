@@ -8,6 +8,8 @@ nova para a mais antiga. O detalhe de cada item, com a evidência de merge, est�
 
 ### Adicionado
 
+- **Slack pelo Hermes:** o canal `hermes` passa a atender também pelo Slack, como segundo transporte assinado com a mesma chave do canal. O dono responde gate, sessão, resumo do pulse e noctum pelo Slack (`@Hermes /ork gate ...`, `P4EJ a`, `1a 2c`), com workspace, pessoa e conversa nas allowlists e a origem dentro do HMAC; o pulse sai para `slack:<conversa>[:<thread_ts>]`. O OpenClaw continua só no Telegram.
+
 - **Conflito coletivo antes do merge — F3 (RM-089):** publicação v2 e v3 na mesma transação, interseção fechada de globs e ordem determinística pela história de primeiro pai alimentam um preflight consultivo no status, na Pista, no SHIP, no MCP e no CI; história ou padrão inconclusivo vira lacuna, e ausência de credencial de leitura no CI não muda seu resultado.
 
 ## [0.6.9] - 2026-11-12

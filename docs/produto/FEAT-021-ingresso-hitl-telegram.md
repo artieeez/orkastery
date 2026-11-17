@@ -13,12 +13,15 @@ fontes:
   codigo:
     - adapters/hermes/hitl-ingress/__init__.py
     - adapters/openclaw/src/hitl-ingress.ts
+    - core/src/hitl-canais.ts
     - core/src/hitl-ingress-receipt.ts
     - core/src/pulse-resposta.ts
   testes:
     - adapters/hermes/test/hitl_ingress_test.py
+    - adapters/hermes/test/hitl_ingress_slack_test.py
     - adapters/openclaw/test/hitl-ingress.test.mjs
     - core/test/hitl-ingress-receipt.test.ts
+    - core/test/hitl-slack.test.ts
     - core/test/pulse-gramatica-ingresso.test.ts
   simbolos:
     - core/src/hitl-ingress-receipt.ts#validarEvidenciaDoIngresso
@@ -44,7 +47,8 @@ fontes:
 
 - **Casos de uso e operações:** responder gate, responder o código do resumo, responder o lote, responder pelo código do gate, responder em texto livre curto, dar a nota do MASTER e ratificar pelo teclado do digest.
 - **Formas que o ingresso intercepta (RM-048):** as de sempre (`P4EJ a`, `1a 2c`, `#OrkPulse...`), a resposta numerada (`1. B, 2. A`, `1 aprovo`, `3 detalhes`), a linha do digest (`ratificar ...`) e, só com a janela de escuta do núcleo aberta (`pulse-escuta.json`), a palavra solta (`aprovo`, `sim`, `a`). O texto depois do código curto vai a 200 caracteres. Texto acima de 300 caracteres nunca é testado contra as formas, e as expressões não têm backtracking caro, porque rodam antes da allowlist. As fontes são as mesmas no núcleo e nos dois adaptadores (`core/test/pulse-gramatica-ingresso.test.ts`).
-- **Pré-condições e gatilho:** remetente e chat na allowlist; bot correto; chave de ingresso configurada.
+- **Slack pelo Hermes:** o canal `hermes` atende também pelo Slack, como segundo transporte assinado com a mesma chave do canal. O envelope leva `origem: slack`, `por: slack:<time>:<usuário>` e `mensagem: slack:<time>:<conversa>:<ts>`, tudo dentro do HMAC, então um envelope do Telegram nunca vale como Slack. O OpenClaw continua só no Telegram. No Slack, mensagem que começa com `/` vira slash command no cliente: os comandos vão como `@Hermes /ork gate ...`, e o gateway tira a menção. A resposta em reply à pergunta do arco (RM-057) ainda é só do Telegram; no Slack, responda com o código (`P4EJ a`).
+- **Pré-condições e gatilho:** remetente e chat (no Slack: workspace, pessoa e conversa) na allowlist; bot correto; chave de ingresso configurada.
 - **Fluxo principal:**
 
   1. O gateway recebe a mensagem e o plugin monta o envelope com a prova.
@@ -54,18 +58,18 @@ fontes:
 - **Alternativas, erros e recuperação:** texto livre ("1. Aprovado") não registra nada; a prova divergente devolve erro de proveniência.
 - **Pós-condições:** recibo de ingresso e resposta no ledger da thread.
 - **Regras de negócio:** BR-021-01: a proveniência HMAC nunca muda e nunca é sintetizada pelo agente.
-- **Critérios de aceite e testes:** Dado um envelope sem prova válida, quando chega ao núcleo, então é recusado (`core/test/hitl-ingress-receipt.test.ts`).
-- **Interface e acessibilidade:** Mensagem de texto no Telegram.
+- **Critérios de aceite e testes:** Dado um envelope sem prova válida, quando chega ao núcleo, então é recusado (`core/test/hitl-ingress-receipt.test.ts`). Dado um envelope do Slack de pessoa, conversa ou workspace fora da allowlist, ou um envelope do Telegram reapresentado como Slack, então é recusado sem efeito (`core/test/hitl-slack.test.ts`, `adapters/hermes/test/hitl_ingress_slack_test.py`).
+- **Interface e acessibilidade:** Mensagem de texto no Telegram ou no Slack (DM com o app ou canal da allowlist).
 
 ## Dados e contratos
 
 - **Entidades:** envelope de ingresso; recibo `ork.hitl-ingress/v1`.
-- **APIs:** Bot API do Telegram, via gateway do Hermes ou do OpenClaw.
+- **APIs:** Bot API do Telegram, via gateway do Hermes ou do OpenClaw; Slack (Socket Mode), via gateway do Hermes.
 - **Eventos:** `hitl_answered`, `pulse_resposta`.
 
 ## Operação e controle
 
-- **Configuração:** `ORK_HITL_TELEGRAM_USERS`, `ORK_HITL_TELEGRAM_CHATS`, `ORK_HITL_TELEGRAM_BOT_ID`, `ORK_HITL_ROOT` (nomes; os valores ficam no `.env` do host).
+- **Configuração:** `ORK_HITL_TELEGRAM_USERS`, `ORK_HITL_TELEGRAM_CHATS`, `ORK_HITL_TELEGRAM_BOT_ID`, `ORK_HITL_ROOT`; no Slack, `ORK_HITL_SLACK_BOT_ID` (o `U...` do bot), `ORK_HITL_SLACK_TEAM` (o `T...` do workspace), `ORK_HITL_SLACK_USERS` e `ORK_HITL_SLACK_CHANNELS` (ids `C...`, `G...` ou `D...`). Nomes; os valores ficam no `.env` do host. O pulse sai pelo Slack com o destino `slack:<conversa>[:<thread_ts>]` no `pulse-host.json`.
 - **Acesso:** allowlist e HMAC; mensagem com mais de 60 s é recusada.
 - **Rollback:** desabilitar o plugin no host; os pedidos continuam pendentes.
 
@@ -74,3 +78,4 @@ fontes:
 | Data | Mudança | Autor/revisor | Evidência ou decisão |
 | --- | --- | --- | --- |
 | 2026-09-24 | página criada no padrão v1.1 | Claude (agente) / Julio, revisão pendente | RM-044 |
+| 2026-11-17 | Slack como segundo transporte assinado do canal Hermes | Claude (agente) / artieeez, revisão pendente | branch `slack-hermes` |
