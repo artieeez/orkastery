@@ -9,6 +9,8 @@ import { z } from 'zod';
 import { nativeBinding, nativeKey } from './hitl-native';
 
 export const ENV_HITL_VERIFIERS = 'ORK_RECEIPT_VERIFIERS';
+// `telegram:<canal>` e o slot da chave HMAC de ingresso do canal, nao do meio fisico: o Slack do Hermes
+// assina com a mesma chave e usa o mesmo slot. O nome fica por compatibilidade com verificadores ja publicados.
 const slots = ['telegram:legacy', 'telegram:hermes', 'telegram:openclaw', 'native:hermes', 'native:openclaw'] as const;
 type Slot = typeof slots[number];
 const sha = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');

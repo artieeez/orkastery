@@ -5,6 +5,7 @@ import {
   abrirPedidoGate, assinaturaDaResposta, canalDoEnvelope, responderGate, RespostaHumana,
 } from '../src/hitl-gates';
 import { validarEvidenciaDoIngresso } from '../src/hitl-ingress-receipt';
+import { ENV_HITL_VERIFIERS, publicHitlVerifiers } from '../src/hitl-public-receipt';
 import {
   autorDoTransporteValido, canalAtendePor, conferirRegistro, CONTRATO_CANAIS, ofertaDeCanais,
   provenienciaDoTransporte, transportesDoCanal,
@@ -128,6 +129,15 @@ test('Slack: gate aprovado pelo Slack grava recibo do canal Hermes que reconfere
     // Origem trocada no ledger depois de gravado reprova a reconferencia.
     assert.equal(validarEvidenciaDoIngresso(p.dir, String(t.id), { ...e, origem: 'telegram' }), false);
     assert.equal(validarEvidenciaDoIngresso(p.dir, String(t.id), { ...e, autorizadoPor: 'telegram:42' }), false);
+    // O agente sem a chave: so os verificadores publicos (o slot do canal cobre os dois transportes).
+    const publicos = publicHitlVerifiers()!;
+    const chave = process.env.ORK_HITL_INGRESS_KEY_HERMES;
+    delete process.env.ORK_HITL_INGRESS_KEY_HERMES;
+    process.env[ENV_HITL_VERIFIERS] = publicos;
+    try {
+      assert.equal(validarEvidenciaDoIngresso(p.dir, String(t.id), e), true);
+      assert.equal(validarEvidenciaDoIngresso(p.dir, String(t.id), { ...e, origem: 'telegram' }), false);
+    } finally { process.env.ORK_HITL_INGRESS_KEY_HERMES = chave; delete process.env[ENV_HITL_VERIFIERS]; }
   } finally { restaurar(); p.limpar(); }
 });
 
